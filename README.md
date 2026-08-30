@@ -64,8 +64,9 @@ print(device)
 # Command line entrypoint
 
 Each notebook can also be run from the command line through `main.py`.
-The executed notebook, run metadata, and extracted image outputs are saved under
-`result/<timestamp>/<function>/`.
+By default this uses the standalone Python functions under `functions/`, so it
+does not require the `.ipynb` files at runtime. Run metadata, logs, images, and
+metrics are saved under `result/<timestamp>/<function>/`.
 
 List available functions:
 
@@ -97,6 +98,12 @@ Run all notebooks:
 
 ```
 python main.py --function all
+```
+
+To execute the original notebooks instead of the standalone functions:
+
+```
+python main.py --backend notebook --function restoration
 ```
 
 ## Docker image

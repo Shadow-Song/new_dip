@@ -4,6 +4,7 @@ import ast
 import json
 import os
 import re
+import subprocess
 import sys
 import traceback
 from datetime import datetime
@@ -20,6 +21,17 @@ FUNCTION_NOTEBOOKS = {
     "restoration": "restoration.ipynb",
     "sr_prior_effect": "sr_prior_effect.ipynb",
     "super_resolution": "super-resolution.ipynb",
+}
+
+FUNCTION_SCRIPTS = {
+    "activation_maximization": "functions/activation-maximization.py",
+    "denoising": "functions/denoising.py",
+    "feature_inversion": "functions/feature-inversion.py",
+    "flash_no_flash": "functions/flash-no-flash.py",
+    "inpainting": "functions/inpainting.py",
+    "restoration": "functions/restoration.py",
+    "sr_prior_effect": "functions/sr-prior-effect.py",
+    "super_resolution": "functions/super-resolution.py",
 }
 
 ALIASES = {
@@ -86,6 +98,12 @@ def parse_args():
         help="Keep executing a notebook after cell errors.",
     )
     parser.add_argument(
+        "--backend",
+        choices=["function", "notebook"],
+        default="function",
+        help="Run independent Python functions by default, or execute notebooks.",
+    )
+    parser.add_argument(
         "--input",
         default=None,
         help="Input image path. Mapped to the selected notebook's input variable.",
@@ -114,6 +132,11 @@ def parse_args():
         help="Override LR in the selected notebook.",
     )
     parser.add_argument(
+        "--device",
+        default=None,
+        help="Device for function backend: cuda, mps, cpu, or auto when omitted.",
+    )
+    parser.add_argument(
         "--param",
         action="append",
         default=[],
@@ -136,7 +159,7 @@ def normalize_function(name):
 
 def list_functions():
     for name in sorted(FUNCTION_NOTEBOOKS):
-        print("%-24s %s" % (name, FUNCTION_NOTEBOOKS[name]))
+        print("%-24s %-32s %s" % (name, FUNCTION_NOTEBOOKS[name], FUNCTION_SCRIPTS[name]))
 
 
 def parse_param_value(value):
@@ -303,6 +326,78 @@ def write_run_info(path, info):
     path.write_text(json.dumps(info, indent=2, ensure_ascii=False) + "\n")
 
 
+def build_function_command(function_name, args, timestamp):
+    script = REPO_ROOT / FUNCTION_SCRIPTS[function_name]
+    if not script.exists():
+        raise FileNotFoundError("Function script not found: %s" % script)
+
+    output_dir = build_run_dir(args.output_root, timestamp, function_name)
+    cmd = [sys.executable, str(script), "--output-dir", str(output_dir)]
+
+    if args.input is not None:
+        if function_name == "flash_no_flash":
+            cmd += ["--flash", args.input]
+        else:
+            cmd += ["--input", args.input]
+
+    if args.mask is not None:
+        if function_name != "inpainting":
+            raise ValueError("--mask is not supported for function '%s'" % function_name)
+        cmd += ["--mask", args.mask]
+
+    if args.factor is not None and function_name in ["super_resolution", "sr_prior_effect"]:
+        cmd += ["--factor", str(args.factor)]
+    elif args.factor is not None:
+        raise ValueError("--factor is not supported for function '%s'" % function_name)
+
+    if args.num_iter is not None:
+        cmd += ["--num-iter", str(args.num_iter)]
+
+    if args.lr is not None:
+        cmd += ["--lr", str(args.lr)]
+
+    if args.device is not None:
+        cmd += ["--device", args.device]
+
+    if args.param:
+        raise ValueError("--param is only supported with --backend notebook")
+
+    return cmd, output_dir
+
+
+def execute_function(function_name, args, timestamp):
+    cmd, output_dir = build_function_command(function_name, args, timestamp)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stdout_path = output_dir / "stdout.log"
+    stderr_path = output_dir / "stderr.log"
+    run_info_path = output_dir / "run.json"
+
+    info = {
+        "function": function_name,
+        "backend": "function",
+        "command": cmd,
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "status": "running",
+        "output_dir": display_path(output_dir),
+        "stdout": display_path(stdout_path),
+        "stderr": display_path(stderr_path),
+    }
+    write_run_info(run_info_path, info)
+
+    with stdout_path.open("w") as stdout_file, stderr_path.open("w") as stderr_file:
+        completed = subprocess.run(cmd, cwd=str(REPO_ROOT), stdout=stdout_file, stderr=stderr_file)
+
+    info.update(
+        {
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+            "returncode": completed.returncode,
+            "status": "success" if completed.returncode == 0 else "failed",
+        }
+    )
+    write_run_info(run_info_path, info)
+    return completed.returncode == 0, info
+
+
 def execute_notebook(function_name, notebook_name, args, timestamp):
     overrides = collect_overrides(function_name, args)
 
@@ -418,18 +513,27 @@ def main():
     all_ok = True
     for name in selected:
         notebook = FUNCTION_NOTEBOOKS[name]
-        try:
-            collect_overrides(name, args)
-        except ValueError as exc:
-            print("error: %s" % exc, file=sys.stderr)
-            return 2
+        if args.backend == "notebook":
+            try:
+                collect_overrides(name, args)
+            except ValueError as exc:
+                print("error: %s" % exc, file=sys.stderr)
+                return 2
 
-        print("Running %s (%s)" % (name, notebook))
-        try:
-            ok, info = execute_notebook(name, notebook, args, timestamp)
-        except ValueError as exc:
-            print("error: %s" % exc, file=sys.stderr)
-            return 2
+            print("Running %s (%s)" % (name, notebook))
+            try:
+                ok, info = execute_notebook(name, notebook, args, timestamp)
+            except ValueError as exc:
+                print("error: %s" % exc, file=sys.stderr)
+                return 2
+        else:
+            print("Running %s (%s)" % (name, FUNCTION_SCRIPTS[name]))
+            try:
+                ok, info = execute_function(name, args, timestamp)
+            except ValueError as exc:
+                print("error: %s" % exc, file=sys.stderr)
+                return 2
+
         all_ok = all_ok and ok
         print("%s: %s -> %s" % (name, info["status"], info["output_dir"]))
         if not ok and not args.allow_errors:

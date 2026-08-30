@@ -1,0 +1,25 @@
+# Core numerical stack.
+numpy>=1.23
+scipy>=1.9
+
+# Deep learning runtime.
+# PyTorch 1.12 introduced the Apple Silicon MPS backend; newer 2.x releases are recommended.
+torch>=1.12
+
+# Keep torchvision paired with the installed torch version.
+# torchvision 0.13 matches the minimum torch version above and provides the modern weights API.
+torchvision>=0.13
+
+# Image processing and metrics.
+pillow>=9.1
+scikit-image>=0.19
+opencv-python>=4.6
+
+# Experiment notebooks and plotting.
+jupyter>=1.0
+nbclient>=0.8
+nbformat>=5.8
+matplotlib>=3.5
+
+# Config / utility dependency used by the original environment.
+PyYAML>=6.0

@@ -33,4 +33,13 @@ echo "Started: $(date)"
 
 # python main.py --function inpainting
 
+python main.py --function dip_diffusion \
+  --input data/sr/zebra_GT.png \
+  --factor 4 \
+  --num-iter 2000 \
+  --strength 0.25 \
+  --guidance-scale 1.0 \
+  --num-inference-steps 25 \
+  --blend-alpha 0.35
+
 echo "Finished: $(date)"

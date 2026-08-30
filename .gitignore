@@ -4,3 +4,4 @@ __pycache__/
 result/
 *.out
 *.err
+.DS_Store

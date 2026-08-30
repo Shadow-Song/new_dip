@@ -1,7 +1,9 @@
 import argparse
 import base64
+import ast
 import json
 import os
+import re
 import sys
 import traceback
 from datetime import datetime
@@ -25,6 +27,20 @@ ALIASES = {
     "flash-no-flash": "flash_no_flash",
     "sr-prior-effect": "sr_prior_effect",
     "super-resolution": "super_resolution",
+}
+
+INPUT_PARAM_BY_FUNCTION = {
+    "activation_maximization": "fname",
+    "denoising": "fname",
+    "feature_inversion": "fname",
+    "inpainting": "img_path",
+    "restoration": "f",
+    "sr_prior_effect": "fname",
+    "super_resolution": "path_to_image",
+}
+
+MASK_PARAM_BY_FUNCTION = {
+    "inpainting": "mask_path",
 }
 
 
@@ -69,6 +85,41 @@ def parse_args():
         action="store_true",
         help="Keep executing a notebook after cell errors.",
     )
+    parser.add_argument(
+        "--input",
+        default=None,
+        help="Input image path. Mapped to the selected notebook's input variable.",
+    )
+    parser.add_argument(
+        "--mask",
+        default=None,
+        help="Mask image path for functions that use a mask, such as inpainting.",
+    )
+    parser.add_argument(
+        "--factor",
+        type=int,
+        default=None,
+        help="Super-resolution/downsampling factor for notebooks that define factor.",
+    )
+    parser.add_argument(
+        "--num-iter",
+        type=int,
+        default=None,
+        help="Override num_iter in the selected notebook.",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=None,
+        help="Override LR in the selected notebook.",
+    )
+    parser.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="Override a notebook variable. VALUE is parsed as a Python literal when possible.",
+    )
     return parser.parse_args()
 
 
@@ -88,6 +139,54 @@ def list_functions():
         print("%-24s %s" % (name, FUNCTION_NOTEBOOKS[name]))
 
 
+def parse_param_value(value):
+    try:
+        return ast.literal_eval(value)
+    except (SyntaxError, ValueError):
+        return value
+
+
+def parse_param_assignment(assignment):
+    if "=" not in assignment:
+        raise ValueError("--param must use NAME=VALUE syntax: %s" % assignment)
+    name, value = assignment.split("=", 1)
+    name = name.strip()
+    if not name.isidentifier():
+        raise ValueError("--param name must be a valid Python identifier: %s" % name)
+    return name, parse_param_value(value.strip())
+
+
+def collect_overrides(function_name, args):
+    overrides = {}
+
+    if args.input is not None:
+        input_param = INPUT_PARAM_BY_FUNCTION.get(function_name)
+        if input_param is None:
+            raise ValueError("--input is not supported for function '%s'" % function_name)
+        overrides[input_param] = args.input
+
+    if args.mask is not None:
+        mask_param = MASK_PARAM_BY_FUNCTION.get(function_name)
+        if mask_param is None:
+            raise ValueError("--mask is not supported for function '%s'" % function_name)
+        overrides[mask_param] = args.mask
+
+    if args.factor is not None:
+        overrides["factor"] = args.factor
+
+    if args.num_iter is not None:
+        overrides["num_iter"] = args.num_iter
+
+    if args.lr is not None:
+        overrides["LR"] = args.lr
+
+    for assignment in args.param:
+        name, value = parse_param_assignment(assignment)
+        overrides[name] = value
+
+    return overrides
+
+
 def build_run_dir(output_root, timestamp, function_name):
     if timestamp is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -104,7 +203,7 @@ def display_path(path):
         return str(path)
 
 
-def make_setup_cell(run_dir, function_name):
+def make_setup_cell(run_dir, function_name, overrides):
     import nbformat
 
     source = f"""
@@ -119,8 +218,63 @@ RESULT_DIR.mkdir(parents=True, exist_ok=True)
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 os.environ["DIP_RESULT_DIR"] = str(RESULT_DIR)
 os.environ["DIP_FUNCTION"] = "{function_name}"
+DIP_CLI_PARAMS = {repr(overrides)}
 """
     return nbformat.v4.new_code_cell(source.strip() + "\n")
+
+
+def apply_parameter_overrides(nb, overrides):
+    if not overrides:
+        return {}
+
+    replacements = {name: 0 for name in overrides}
+    assignment_patterns = {
+        name: re.compile(r"^(\s*)%s\s*=.*$" % re.escape(name))
+        for name in overrides
+    }
+
+    for cell in nb.cells:
+        if cell.get("cell_type") != "code":
+            continue
+
+        source = cell.get("source", "")
+        if isinstance(source, list):
+            source = "".join(source)
+
+        new_lines = []
+        for line in source.splitlines(keepends=True):
+            newline = "\n" if line.endswith("\n") else ""
+            raw_line = line[:-1] if newline else line
+            replacement = None
+
+            for name, pattern in assignment_patterns.items():
+                match = pattern.match(raw_line)
+                if match and not raw_line.lstrip().startswith("#"):
+                    replacement = "%s%s = %r%s" % (
+                        match.group(1),
+                        name,
+                        overrides[name],
+                        newline,
+                    )
+                    replacements[name] += 1
+                    break
+
+            new_lines.append(replacement if replacement is not None else line)
+
+        cell["source"] = "".join(new_lines)
+
+    missing = {name: value for name, value in overrides.items() if replacements[name] == 0}
+    if missing:
+        source = "\n".join("%s = %r" % (name, value) for name, value in missing.items())
+        nb.cells.insert(1, make_override_cell(source))
+
+    return replacements
+
+
+def make_override_cell(source):
+    import nbformat
+
+    return nbformat.v4.new_code_cell("# Injected CLI parameter overrides.\n" + source + "\n")
 
 
 def extract_artifacts(nb, artifacts_dir):
@@ -150,6 +304,8 @@ def write_run_info(path, info):
 
 
 def execute_notebook(function_name, notebook_name, args, timestamp):
+    overrides = collect_overrides(function_name, args)
+
     import nbformat
     from nbclient import NotebookClient
 
@@ -175,11 +331,15 @@ def execute_notebook(function_name, notebook_name, args, timestamp):
         "artifacts_dir": display_path(artifacts_dir),
         "kernel": args.kernel,
         "timeout": args.timeout,
+        "parameters": overrides,
     }
     write_run_info(run_info_path, info)
 
     nb = nbformat.read(notebook_path, as_version=4)
-    nb.cells.insert(0, make_setup_cell(run_dir, function_name))
+    nb.cells.insert(0, make_setup_cell(run_dir, function_name, overrides))
+    replacements = apply_parameter_overrides(nb, overrides)
+    info["parameter_replacements"] = replacements
+    write_run_info(run_info_path, info)
 
     old_env = {
         "DIP_RESULT_DIR": os.environ.get("DIP_RESULT_DIR"),
@@ -258,8 +418,18 @@ def main():
     all_ok = True
     for name in selected:
         notebook = FUNCTION_NOTEBOOKS[name]
+        try:
+            collect_overrides(name, args)
+        except ValueError as exc:
+            print("error: %s" % exc, file=sys.stderr)
+            return 2
+
         print("Running %s (%s)" % (name, notebook))
-        ok, info = execute_notebook(name, notebook, args, timestamp)
+        try:
+            ok, info = execute_notebook(name, notebook, args, timestamp)
+        except ValueError as exc:
+            print("error: %s" % exc, file=sys.stderr)
+            return 2
         all_ok = all_ok and ok
         print("%s: %s -> %s" % (name, info["status"], info["output_dir"]))
         if not ok and not args.allow_errors:

@@ -79,6 +79,20 @@ Run one function:
 python main.py --function restoration
 ```
 
+Override common notebook parameters:
+
+```
+python main.py --function super_resolution --input data/sr/zebra_GT.png --factor 4
+python main.py --function inpainting --input data/inpainting/kate.png --mask data/inpainting/kate_mask.png
+python main.py --function denoising --input data/denoising/F16_GT.png --num-iter 1000 --lr 0.01
+```
+
+For notebook-specific variables, use `--param NAME=VALUE`:
+
+```
+python main.py --function super_resolution --param imsize=-1 --param enforse_div32="'CROP'"
+```
+
 Run all notebooks:
 
 ```

@@ -23,3 +23,9 @@ matplotlib>=3.5
 
 # Config / utility dependency used by the original environment.
 PyYAML>=6.0
+
+# Diffusion model dependencies.
+diffusers>=0.30
+transformers>=4.40
+accelerate>=0.30
+safetensors>=0.4

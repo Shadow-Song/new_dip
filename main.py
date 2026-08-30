@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 FUNCTION_NOTEBOOKS = {
     "activation_maximization": "activation_maximization.ipynb",
     "denoising": "denoising.ipynb",
+    "dip_diffusion": None,
     "feature_inversion": "feature_inversion.ipynb",
     "flash_no_flash": "flash-no-flash.ipynb",
     "inpainting": "inpainting.ipynb",
@@ -24,18 +25,20 @@ FUNCTION_NOTEBOOKS = {
 }
 
 FUNCTION_SCRIPTS = {
-    "activation_maximization": "functions/activation-maximization.py",
+    "activation_maximization": "functions/activation_maximization.py",
     "denoising": "functions/denoising.py",
-    "feature_inversion": "functions/feature-inversion.py",
-    "flash_no_flash": "functions/flash-no-flash.py",
+    "dip_diffusion": "functions/dip_diffusion.py",
+    "feature_inversion": "functions/feature_inversion.py",
+    "flash_no_flash": "functions/flash_no_flash.py",
     "inpainting": "functions/inpainting.py",
     "restoration": "functions/restoration.py",
-    "sr_prior_effect": "functions/sr-prior-effect.py",
-    "super_resolution": "functions/super-resolution.py",
+    "sr_prior_effect": "functions/sr_prior_effect.py",
+    "super_resolution": "functions/super_resolution.py",
 }
 
 ALIASES = {
     "activation-maximization": "activation_maximization",
+    "dip-diffusion": "dip_diffusion",
     "flash-no-flash": "flash_no_flash",
     "sr-prior-effect": "sr_prior_effect",
     "super-resolution": "super_resolution",
@@ -137,6 +140,35 @@ def parse_args():
         help="Device for function backend: cuda, mps, cpu, or auto when omitted.",
     )
     parser.add_argument(
+        "--model-id",
+        default=None,
+        help="Diffusion model id for dip_diffusion.",
+    )
+    parser.add_argument(
+        "--strength",
+        type=float,
+        default=None,
+        help="Diffusion img2img strength for dip_diffusion.",
+    )
+    parser.add_argument(
+        "--guidance-scale",
+        type=float,
+        default=None,
+        help="Diffusion guidance scale for dip_diffusion.",
+    )
+    parser.add_argument(
+        "--num-inference-steps",
+        type=int,
+        default=None,
+        help="Diffusion inference steps for dip_diffusion.",
+    )
+    parser.add_argument(
+        "--blend-alpha",
+        type=float,
+        default=None,
+        help="Blend weight for diffusion output in dip_diffusion.",
+    )
+    parser.add_argument(
         "--param",
         action="append",
         default=[],
@@ -159,7 +191,8 @@ def normalize_function(name):
 
 def list_functions():
     for name in sorted(FUNCTION_NOTEBOOKS):
-        print("%-24s %-32s %s" % (name, FUNCTION_NOTEBOOKS[name], FUNCTION_SCRIPTS[name]))
+        notebook = FUNCTION_NOTEBOOKS[name] or "-"
+        print("%-24s %-32s %s" % (name, notebook, FUNCTION_SCRIPTS[name]))
 
 
 def parse_param_value(value):
@@ -345,7 +378,7 @@ def build_function_command(function_name, args, timestamp):
             raise ValueError("--mask is not supported for function '%s'" % function_name)
         cmd += ["--mask", args.mask]
 
-    if args.factor is not None and function_name in ["super_resolution", "sr_prior_effect"]:
+    if args.factor is not None and function_name in ["super_resolution", "sr_prior_effect", "dip_diffusion"]:
         cmd += ["--factor", str(args.factor)]
     elif args.factor is not None:
         raise ValueError("--factor is not supported for function '%s'" % function_name)
@@ -358,6 +391,27 @@ def build_function_command(function_name, args, timestamp):
 
     if args.device is not None:
         cmd += ["--device", args.device]
+
+    diffusion_args = [
+        args.model_id,
+        args.strength,
+        args.guidance_scale,
+        args.num_inference_steps,
+        args.blend_alpha,
+    ]
+    if any(value is not None for value in diffusion_args):
+        if function_name != "dip_diffusion":
+            raise ValueError("--model-id, --strength, --guidance-scale, --num-inference-steps, and --blend-alpha are only supported for function 'dip_diffusion'")
+        if args.model_id is not None:
+            cmd += ["--model-id", args.model_id]
+        if args.strength is not None:
+            cmd += ["--strength", str(args.strength)]
+        if args.guidance_scale is not None:
+            cmd += ["--guidance-scale", str(args.guidance_scale)]
+        if args.num_inference_steps is not None:
+            cmd += ["--num-inference-steps", str(args.num_inference_steps)]
+        if args.blend_alpha is not None:
+            cmd += ["--blend-alpha", str(args.blend_alpha)]
 
     if args.param:
         raise ValueError("--param is only supported with --backend notebook")
@@ -400,6 +454,9 @@ def execute_function(function_name, args, timestamp):
 
 def execute_notebook(function_name, notebook_name, args, timestamp):
     overrides = collect_overrides(function_name, args)
+
+    if notebook_name is None:
+        raise ValueError("function '%s' does not have a notebook backend" % function_name)
 
     import nbformat
     from nbclient import NotebookClient
@@ -509,6 +566,8 @@ def main():
         if function_name == "all"
         else [function_name]
     )
+    if args.backend == "notebook" and function_name == "all":
+        selected = sorted(name for name, notebook in FUNCTION_NOTEBOOKS.items() if notebook is not None)
 
     all_ok = True
     for name in selected:
@@ -516,6 +575,8 @@ def main():
         if args.backend == "notebook":
             try:
                 collect_overrides(name, args)
+                if notebook is None:
+                    raise ValueError("function '%s' does not have a notebook backend" % name)
             except ValueError as exc:
                 print("error: %s" % exc, file=sys.stderr)
                 return 2
@@ -527,6 +588,12 @@ def main():
                 print("error: %s" % exc, file=sys.stderr)
                 return 2
         else:
+            try:
+                build_function_command(name, args, timestamp)
+            except ValueError as exc:
+                print("error: %s" % exc, file=sys.stderr)
+                return 2
+
             print("Running %s (%s)" % (name, FUNCTION_SCRIPTS[name]))
             try:
                 ok, info = execute_function(name, args, timestamp)

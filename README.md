@@ -88,6 +88,20 @@ python main.py --function inpainting --input data/inpainting/kate.png --mask dat
 python main.py --function denoising --input data/denoising/F16_GT.png --num-iter 1000 --lr 0.01
 ```
 
+Run DIP followed by prompt-free diffusion post-processing:
+
+```
+python main.py --function dip_diffusion \
+  --input data/sr/zebra_GT.png \
+  --factor 4 \
+  --num-iter 2000 \
+  --device mps \
+  --strength 0.25 \
+  --guidance-scale 1.0 \
+  --num-inference-steps 25 \
+  --blend-alpha 0.35
+```
+
 For notebook-specific variables, use `--param NAME=VALUE`:
 
 ```

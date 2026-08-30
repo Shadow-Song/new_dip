@@ -33,12 +33,4 @@ echo "Started: $(date)"
 
 # python main.py --function inpainting
 
-python run_hybrid.py \
-  --task inpainting \
-  --input data/inpainting/kate.png \
-  --mask data/inpainting/kate_mask.png \
-  --prompt "a realistic photograph of a woman" \
-  --dip-iters 3000 \
-  --strength 0.35
-
 echo "Finished: $(date)"

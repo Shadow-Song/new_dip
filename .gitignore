@@ -5,3 +5,4 @@ result/
 *.out
 *.err
 .DS_Store
+queue.sh

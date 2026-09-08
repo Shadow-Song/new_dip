@@ -102,14 +102,21 @@ def run_super_resolution(
     from utils.device_utils import get_device
     from utils.sr_utils import get_baselines, load_LR_HR_imgs_sr, put_in_center, tv_loss
 
-    if factor == 4:
+    if factor < 2:
+        raise ValueError("factor must be an integer greater than or equal to 2")
+
+    if factor == 2:
+        default_num_iter = 2000
+        default_reg_noise_std = 0.03
+    elif factor == 4:
         default_num_iter = 2000
         default_reg_noise_std = 0.03
     elif factor == 8:
         default_num_iter = 4000
         default_reg_noise_std = 0.05
     else:
-        raise ValueError("factor must be 4 or 8 to match the original notebook")
+        default_num_iter = 2000
+        default_reg_noise_std = 0.03
 
     if num_iter is None:
         num_iter = default_num_iter
@@ -298,7 +305,7 @@ def run_super_resolution(
 def parse_args():
     parser = argparse.ArgumentParser(description="Run Deep Image Prior super-resolution.")
     parser.add_argument("--input", default="data/sr/zebra_GT.png", help="Input HR image path.")
-    parser.add_argument("--factor", type=int, default=4, help="Super-resolution factor: 4 or 8.")
+    parser.add_argument("--factor", type=int, default=4, help="Super-resolution factor, e.g. 2, 4, or 8.")
     parser.add_argument("--output-dir", default=None, help="Output directory.")
     parser.add_argument("--imsize", type=int, default=-1, help="Resize input before running, or -1.")
     parser.add_argument("--enforse-div32", default="CROP", help="Crop image to dimensions divisible by 32.")
